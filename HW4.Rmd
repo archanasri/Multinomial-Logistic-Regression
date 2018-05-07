@@ -1,0 +1,828 @@
+---
+title: "Homework 4: Final Project"
+author: "Archanasri Subramanian (u1141789)"
+output: html_document
+---
+
+Given a dataset $(X,Y)$ with $X \in \Re^d$ and $Y\in \{1, 2, 3\}$, we train the classifier to predict an unknown class label $\tilde y$ for a new data point $\tilde {x}$.
+
+We make the prediction by using two methods and then compare the values. The methods are:
+
+(1) Multinomial One vs All Bayesian Logistic Regression
+(2) Multinomial One vs All Logistic Regression (Non - Bayesian)
+
+The model is tested on two datasets,
+
+(1) Iris Dataset
+(2) Glass Dataset (https://archive.ics.uci.edu/ml/machine-learning-databases/glass/)
+
+The Iris Dataset predicts the type of iris plant (1 - setosa, 2 - versicolor, 3 - viriginca). 
+
+The Glass Dataset predicts the type of glass (1 - Float Processed Window Glass, 2 - Non Float Processed Window Glass, 3 - Non-Window Glass).
+
+**(1) Bayesian Logisitic Regression Model**
+
+The Bayesian Logistic Regression model is set up as,
+
+$Y \sim Ber(\frac{1}{1 + exp(-X^T\beta)}),$
+$\beta \sim \mathcal{N}(0,\sigma^2I)$
+
+The posterior is,
+
+$p(\beta|y_i;x_i,\sigma) \sim \prod_{i = 1}^{n}(\frac{1}{1 + e^{-X_i^T \beta}})^{y_i} (\frac{e^{-X_i^T \beta}}{1 + e^{-X_i^T \beta}})^{1 - y_i} exp(\frac{-||\beta||^2}{2\sigma^2})$
+
+Applying log on both sides,
+
+$log(p(\beta|y_i;x_i,\sigma)) \sim \sum_{i = 1}^{n} y_i log(\frac{1}{1 + exp(-X_i^T\beta)}) + (1 - y_i)log(\frac{e^{-X_i^T \beta}}{1 + e^{-X_i^T \beta}}) + log(exp(\frac{-||\beta||^2}{2\sigma^2}))$
+
+$log(p(\beta|y_i;x_i,\sigma)) \sim  \sum_{i = 1}^{n}- y_i log(1 + exp(-X_i^T\beta)) - X_i^T\beta - log(1 + exp(-X_i^T\beta)) + y_iX_i^T\beta + y_ilog(1 + exp(-X_i^T\beta)) - \frac{||\beta||^2}{2\sigma^2}$
+
+$log(p(\beta|y_i;x_i,\sigma)) \sim - \sum_{i = 1}^{n} (1 - y_i)X_i^T\beta + log(1 + exp(-X_i^T\beta)) + \frac{||\beta||^2}{2\sigma^2}$
+
+This can be rewritten as,
+
+$log(p(\beta|y_i;x_i,\sigma)) \sim - U(\beta)$
+
+Raising the equation on both sides to the power of exp,
+
+$exp(log(p(\beta|y_i;x_i,\sigma))) \sim exp(- U(\beta))$
+
+$p(\beta|y_i;x_i,\sigma) \sim exp(- U(\beta))$
+
+The energy equation obtained is,
+
+$U(\beta) = \sum_{i = 1}^{n} (1 - y_i)X_i^T\beta + log(1 + exp(-X_i^T\beta)) + \frac{||\beta||^2}{2\sigma^2}$
+
+One Vs All Logisitc Regression is the idea of clubbing all classes except one class into one. So a binary classification is performed between one class and all the other classes. This is performed 'n' number of times where n is the number of classes. By simple logic, we can perform this 'n-1' number of times instead of 'n' times to optimize time.
+
+In both the datasets, the number of classes are three (n). So during the training time, beta samples (after burn-in) are generated twice (n-1). Then these beta samples are used for prediction. During prediction for the Iris Dataset, first it is predicted whether it is 'setosa'. If not, then it is predicted whether it is 'virginica' or 'versicolor'. A similar strategy is followed for the prediction of the glass dataset as well.
+
+For both the datasets, first, 1000 Beta values are used for prediction and then the average Beta value is used for prediction. 
+
+Let's perform the Multinomial One vs All Bayesian Logistic Regression on the Iris Dataset,
+
+```{r}
+U = function(X, Y, Be, sigma)
+{
+  U_beta = sum( log(1 + exp(-X%*%Be)) + (1-Y)*(X%*%Be)) + sum(Be*Be)/(2*sigma*sigma)
+  return (U_beta)
+}
+
+grad_U = function(X, Y, Be, sigma)
+{
+  res = colSums((1 - Y) * X + (c(exp(-X %*% Be)) * -X)/c(1 + exp(-X %*% Be))) + (Be)/(sigma * sigma)
+  return (res)
+}
+
+HMC = function (X, Y, sigma, epsilon, L, current_q)
+{
+  q = current_q
+  p = rnorm(length(q),0,1) # independent standard normal variates
+  current_p = p
+  #Make a half step for momentum at the beginning
+  p = p - epsilon * grad_U(X,Y,q,sigma) / 2
+  #Alternate full steps for position and momentum
+  for (i in 1:L-1)
+  {
+    #Make a full step for the position
+    q = q + epsilon * p
+    #Make a full step for the momentum, except at end of trajectory
+    if (i!=L) 
+    {
+      p = p - epsilon * grad_U(X,Y,q,sigma)
+    }
+  }
+  q = q + epsilon * p
+  #Make a half step for momentum at the end.
+  p = p - epsilon * grad_U(X,Y,q,sigma) / 2
+  #Negate momentum at end of trajectory to make the proposal symmetric
+  p = -p
+  #Evaluate potential and kinetic energies at start and end of trajectory
+  current_U = U(X,Y,current_q,sigma)
+  current_K = sum(current_p^2) / 2
+  proposed_U = U(X,Y,q,sigma)
+  proposed_K = sum(p^2) / 2
+  #Accept or reject the state at end of trajectory, returning either
+  #the position at the end of the trajectory or the initial position
+  if(current_U+current_K>proposed_U+proposed_U)
+  {
+    return(q) #accept
+  }
+  else if (runif(1) < exp(current_U-proposed_U+current_K-proposed_K))
+  {
+    return (q)  #accept
+  }
+  else
+  {
+    return (current_q)  #reject
+  }
+}
+
+GenBeta = function(X, Y, sigma, epsilon, L)
+{
+  #Burn in (100)
+  initialBe = matrix(1, 5, 1)
+  for (i in 1:100) {
+    initialBe = HMC(X, Y, sigma, epsilon, L, initialBe)
+  }
+  FinalBe = initialBe
+  BetaSamples = matrix(0,5,1000)
+  BetaSamples[,1] = FinalBe
+  #Generating 1000 samples of beta after burn in
+  for (i in 2:1000) {
+    B = BetaSamples[,i-1]
+    BetaSamples[,i] = HMC(X, Y, sigma, epsilon, L, B)
+  }
+  return(BetaSamples)
+}
+
+Prediction = function()
+{
+  #Estimating predictions
+  YPred = matrix(0, 60, 1000)
+  MainYPred = matrix(0, 60, 1000)
+  for (i in 1:1000) {
+    B_1 = BetaSamples_1[,i]
+    pred_1 = 1/(1 + exp(-TestingX_1 %*% B_1))
+    Y = matrix(0,60,1)
+    Y[pred_1 >= 0.5] = 1
+    YPred[,i] = Y
+    for (j in 1:60) {
+      if (YPred[j,i] == 0)
+      {
+        MainYPred[j,i] = 1
+      }
+    }
+    NewTestData = TestingX_1[which(Y==1),]
+    B_2 = BetaSamples_2[,i]
+    pred_2 = 1/(1 + exp(-NewTestData %*% B_2))
+    Y = matrix(0,60,1)
+    Y[pred_2 >= 0.5] = 1
+    YPred[,i] = Y
+    for (j in 1:60) {
+      if (YPred[j,i] == 0)
+      {
+        MainYPred[j,i] = 2
+      }
+      else
+      {
+        MainYPred[j,i] = 3
+      }
+    }
+  }
+  #Calculating error rate
+  Loss = matrix(0, 1000, 1)
+  for (i in 1:1000) {
+    Error = 0
+    for (j in 1:60) {
+      if (MainYPred[j,i] != MainTestingY[j])
+      {
+        Error = Error + 1
+      }
+    }
+    Loss[i,1] = Error
+  }
+  ErrorRate = sum(Loss)/1000
+  cat("Error rate with 1000 beta values is  ", ErrorRate)
+}
+
+PredictAvgB = function()
+{
+  AverageB_1 = matrix(0,5,1)
+  AverageB_2 = matrix(0,5,1)
+  MainYPred = matrix(0, 60, 1)
+  #Finding Average Beta values to predict
+  for (i in 1:5) {
+    AverageB_1[i,1] = sum(BetaSamples_1[i,1:1000])/1000
+  }
+  for (i in 1:5) {
+    AverageB_2[i,1] = sum(BetaSamples_2[i,1:1000])/1000
+  }
+  #Estimating prediction
+  for (i in 1:60)
+  {
+    pred_1 = 1/(1 + exp(-MainTestingX[i,] %*% AverageB_1))
+    if (pred_1 > 0.5)
+    {
+      MainYPred[i,1] = 1
+    }
+  }
+  for (i in 1:60)
+  {
+    if (MainYPred[i,1] == 1)
+    {
+      pred_2 = 1/(1 + exp(-MainTestingX[i,] %*% AverageB_2))
+      if (pred_2 >= 0.5)
+      {
+        MainYPred[i,1] = 3
+      }
+      else
+      {
+        MainYPred[i,1] = 2
+      }
+    }
+  }
+  #Calculating error rate
+  Error = 0
+  for (i in 1:60) {
+    if (MainYPred[i,1] != MainTestingY[i])
+      {
+        Error = Error + 1
+      }
+    }
+  ErrorRate = Error/60
+  cat("Error rate with average beta value is ", ErrorRate)
+}
+
+#Extracting training data and testing data of iris dataset
+library(datasets)
+data("iris")
+
+SetosaData = as.data.frame.matrix(subset(iris, iris$Species == c("setosa")))
+VersicolorData = as.data.frame.matrix(subset(iris, iris$Species == c("versicolor")))
+VirginicaData =  as.data.frame.matrix(subset(iris, iris$Species == c("virginica")))
+
+MainTrainingX = rbind(SetosaData[1:30,],VersicolorData[1:30,], VirginicaData[1:30,])
+MainTestingX = rbind(SetosaData[31:50,],VersicolorData[31:50,], VirginicaData[31:50,])
+
+MainTrainingY = rep(0,60)
+MainTrainingY[which(MainTrainingX$Species == "setosa")] = 1
+MainTrainingY[which(MainTrainingX$Species == "versicolor")] = 2
+MainTrainingY[which(MainTrainingX$Species == "virginica")] = 3
+
+MainTestingY = rep(0,60)
+MainTestingY[which(MainTestingX$Species == "setosa")] = 1
+MainTestingY[which(MainTestingX$Species == "versicolor")] = 2
+MainTestingY[which(MainTestingX$Species == "virginica")] = 3
+
+MainTrainingX = MainTrainingX[-5]
+MainTrainingX = cbind(MainTrainingX, matrix(1,90,1))
+MainTrainingX = as.matrix(MainTrainingX)
+
+MainTestingX = MainTestingX[-5]
+MainTestingX = cbind(MainTestingX,matrix(1,60,1))
+MainTestingX = as.matrix(MainTestingX)
+
+#Dataset 1
+TrainingX_1 = rbind(SetosaData[1:30,],VersicolorData[1:30,], VirginicaData[1:30,])
+TestingX_1 = rbind(SetosaData[31:50,],VersicolorData[31:50,], VirginicaData[31:50,])
+
+TrainingY_1 = rep(0,90)
+TrainingY_1[which(TrainingX_1$Species == "setosa")] = 0
+TrainingY_1[which(TrainingX_1$Species == "versicolor")] = 1
+TrainingY_1[which(TrainingX_1$Species == "virginica")] = 1
+
+TestingY_1 = rep(0,60)
+TestingY_1[which(TestingX_1$Species == "setosa")] = 0
+TestingY_1[which(TestingX_1$Species == "versicolor")] = 1
+TestingY_1[which(TestingX_1$Species == "virginica")] = 1
+
+TrainingX_1 = TrainingX_1[-5]
+TrainingX_1 = cbind(TrainingX_1, matrix(1,90,1))
+TrainingX_1 = as.matrix(TrainingX_1)
+
+TestingX_1 = TestingX_1[-5]
+TestingX_1 = cbind(TestingX_1,matrix(1,60,1))
+TestingX_1 = as.matrix(TestingX_1)
+
+#Dataset 2
+TrainingX_2 = rbind(VersicolorData[1:30,], VirginicaData[1:30,])
+TestingX_2 = rbind(VersicolorData[31:50,], VirginicaData[31:50,])
+
+TrainingY_2 = rep(0,60)
+TrainingY_2[which(TrainingX_2$Species == "versicolor")] = 0
+TrainingY_2[which(TrainingX_2$Species == "virginica")] = 1
+
+TestingY_2 = rep(0,40)
+TestingY_2[which(TestingX_2$Species == "versicolor")] = 0
+TestingY_2[which(TestingX_2$Species == "virginica")] = 1
+
+TrainingX_2 = TrainingX_2[-5]
+TrainingX_2 = cbind(TrainingX_2, matrix(1,60,1))
+TrainingX_2 = as.matrix(TrainingX_2)
+
+TestingX_2 = TestingX_2[-5]
+TestingX_2 = cbind(TestingX_2,matrix(1,40,1))
+TestingX_2 = as.matrix(TestingX_2)
+
+#Paramater initialization
+sigma = 1
+epsilon = 0.05
+L = 15
+BetaSamples_1 = GenBeta(TrainingX_1, TrainingY_1, sigma, epsilon, L)
+BetaSamples_2 = GenBeta(TrainingX_2, TrainingY_2, sigma, epsilon, L)
+Prediction()
+PredictAvgB()
+cat("The values of sigma, epsilon and L are ", sigma, epsilon, L)
+
+#Paramater initialization
+sigma = 0.05
+epsilon = 0.005
+L = 12
+BetaSamples_1 = GenBeta(TrainingX_1, TrainingY_1, sigma, epsilon, L)
+BetaSamples_2 = GenBeta(TrainingX_2, TrainingY_2, sigma, epsilon, L)
+Prediction()
+PredictAvgB()
+cat("The values of sigma, epsilon and L are ", sigma, epsilon, L)
+```
+
+Let's perform the Multinomial One vs All Bayesian Logistic Regression on the Glass Dataset,
+
+```{r}
+#Data Extraction
+setwd("/Users/archanasrisubramanian/Desktop/Probabilistic Modeling/Project")
+Data = read.csv(file = "glass.data.txt", header = TRUE, sep = ',')
+Data = as.data.frame.matrix(Data)
+
+Data$X1.1[which(Data$X1.1 == 3)] = 1
+Data$X1.1[which(Data$X1.1 == 5)] = 3
+Data$X1.1[which(Data$X1.1 == 6)] = 3
+Data$X1.1[which(Data$X1.1 == 7)] = 3
+
+#MainData
+NumCol = ncol(Data)
+NumRow = nrow(Data)
+TrainRow = round(0.75 * NumRow)
+TestRow = round(0.25 * NumRow)
+TestRowStart = TrainRow + 1
+
+MainTrainingX = Data[1:TrainRow,]
+MainTestingX = Data[TestRowStart:NumRow,]
+
+MainTrainingY = rep(0,TrainRow)
+MainTrainingY[which(MainTrainingX$X1.1 == 1)] = 1
+MainTrainingY[which(MainTrainingX$X1.1 == 2)] = 2
+MainTrainingY[which(MainTrainingX$X1.1 == 3)] = 3
+
+MainTestingY = rep(0,TestRow)
+MainTestingY[which(MainTestingX$X1.1 == 1)] = 1
+MainTestingY[which(MainTestingX$X1.1 == 2)] = 2
+MainTestingY[which(MainTestingX$X1.1 == 3)] = 3
+
+MainTrainingX = MainTrainingX[-NumCol]
+MainTrainingX = cbind(MainTrainingX, matrix(1,TrainRow,1))
+MainTrainingX = as.matrix(MainTrainingX)
+
+MainTestingX = MainTestingX[-NumCol]
+MainTestingX = cbind(MainTestingX,matrix(1,TestRow,1))
+MainTestingX = as.matrix(MainTestingX)
+
+#Dataset 1
+NumCol_1 = ncol(Data)
+NumRow_1 = nrow(Data)
+TrainRow_1 = round(0.75 * NumRow_1)
+TestRow_1 = round(0.25 * NumRow_1)
+TestRowStart_1 = TrainRow_1 + 1
+
+TrainingX_1 = Data[1:TrainRow_1,]
+TestingX_1 = Data[TestRowStart_1:NumRow_1,]
+
+TrainingY_1 = rep(0,TrainRow_1)
+TrainingY_1[which(TrainingX_1$X1.1 == 1)] = 1
+TrainingY_1[which(TrainingX_1$X1.1 == 2)] = 2
+TrainingY_1[which(TrainingX_1$X1.1 == 3)] = 3
+
+TestingY_1 = rep(0,TestRow_1)
+TestingY_1[which(TestingX_1$X1.1 == 1)] = 1
+TestingY_1[which(TestingX_1$X1.1 == 2)] = 2
+TestingY_1[which(TestingX_1$X1.1 == 3)] = 3
+
+TrainingX_1 = TrainingX_1[-NumCol_1]
+TrainingX_1 = cbind(TrainingX_1, matrix(1,TrainRow_1,1))
+TrainingX_1 = as.matrix(TrainingX_1)
+
+TestingX_1 = TestingX_1[-NumCol_1]
+TestingX_1 = cbind(TestingX_1,matrix(1,TestRow_1,1))
+TestingX_1 = as.matrix(TestingX_1)
+
+#Dataset 2
+Index = which(Data$X1.1 == 2)
+IndexStart = Index[1]
+IndexEnd = Index[length(Index)]
+Data_2 = Data[IndexStart:IndexEnd,]
+
+Index = which(Data$X1.1 == 3)
+IndexStart = Index[1]
+IndexEnd = Index[length(Index)]
+Data_2 = rbind(Data_2, Data[IndexStart:IndexEnd,])
+
+NumCol_2 = ncol(Data_2)
+NumRow_2 = nrow(Data_2)
+TrainRow_2 = round(0.75 * NumRow_2)
+TestRow_2 = round(0.25 * NumRow_2)
+TestRowStart_2 = TrainRow_2 + 1
+
+TrainingX_2 = Data[1:TrainRow_2,]
+TestingX_2 = Data[TestRowStart_2:NumRow_2,]
+
+TrainingY_2 = rep(0,TrainRow_2)
+TrainingY_2[which(TrainingX_2$X1.1 == 1)] = 1
+TrainingY_2[which(TrainingX_2$X1.1 == 2)] = 2
+TrainingY_2[which(TrainingX_2$X1.1 == 3)] = 3
+
+TestingY_2 = rep(0,TestRow_2)
+TestingY_2[which(TestingX_2$X1.1 == 1)] = 1
+TestingY_2[which(TestingX_2$X1.1 == 2)] = 2
+TestingY_2[which(TestingX_2$X1.1 == 3)] = 3
+
+TrainingX_2 = TrainingX_2[-NumCol_2]
+TrainingX_2 = cbind(TrainingX_2, matrix(1,TrainRow_2,1))
+TrainingX_2 = as.matrix(TrainingX_2)
+
+TestingX_2 = TestingX_2[-NumCol_2]
+TestingX_2 = cbind(TestingX_2,matrix(1,TestRow_2,1))
+TestingX_2 = as.matrix(TestingX_2)
+
+U = function(X, Y, Be, sigma)
+{
+  U_beta = sum( log(1 + exp(-X%*%Be)) + (1-Y)*(X%*%Be)) + sum(Be*Be)/(2*sigma*sigma)
+  return (U_beta)
+}
+
+grad_U = function(X, Y, Be, sigma)
+{
+  res = colSums((1 - Y) * X + (c(exp(-X %*% Be)) * -X)/c(1 + exp(-X %*% Be))) + (Be)/(sigma * sigma)
+  return (res)
+}
+
+HMC = function (X, Y, sigma, epsilon, L, current_q)
+{
+  q = current_q
+  p = rnorm(length(q),0,1) # independent standard normal variates
+  current_p = p
+  #Make a half step for momentum at the beginning
+  p = p - epsilon * grad_U(X,Y,q,sigma) / 2
+  #Alternate full steps for position and momentum
+  for (i in 1:L-1)
+  {
+    #Make a full step for the position
+    q = q + epsilon * p
+    #Make a full step for the momentum, except at end of trajectory
+    if (i!=L) 
+    {
+      p = p - epsilon * grad_U(X,Y,q,sigma)
+    }
+  }
+  q = q + epsilon * p
+  #Make a half step for momentum at the end.
+  p = p - epsilon * grad_U(X,Y,q,sigma) / 2
+  #Negate momentum at end of trajectory to make the proposal symmetric
+  p = -p
+  #Evaluate potential and kinetic energies at start and end of trajectory
+  current_U = U(X,Y,current_q,sigma)
+  current_K = sum(current_p^2) / 2
+  proposed_U = U(X,Y,q,sigma)
+  proposed_K = sum(p^2) / 2
+  #Accept or reject the state at end of trajectory, returning either
+  #the position at the end of the trajectory or the initial position
+  if(current_U+current_K>proposed_U+proposed_U)
+  {
+    return(q) #accept
+  }
+  else if (runif(1) < exp(current_U-proposed_U+current_K-proposed_K))
+  {
+    return (q)  #accept
+  }
+  else
+  {
+    return (current_q)  #reject
+  }
+}
+
+#Paramater initialization
+sigma = 1
+epsilon = 0.05
+L = 15
+
+#Burn in (100)
+initialBe_1 = matrix(1, NumCol_1, 1)
+for (i in 1:100) {
+  initialBe_1 = HMC(TrainingX_1, TrainingY_1, sigma, epsilon, L, initialBe_1)
+}
+
+FinalBe_1 = initialBe_1
+
+BetaSamples_1 = matrix(0,NumCol_1,1000)
+BetaSamples_1[,1] = FinalBe_1
+
+#Generating 1000 samples of beta after burn in
+for (i in 2:1000) {
+  B = BetaSamples_1[,i-1]
+  BetaSamples_1[,i] = HMC(TrainingX_1, TrainingY_1, sigma, epsilon, L, B)
+}
+
+initialBe_2 = matrix(1, NumCol_2, 1)
+
+#Burn in (100)
+for (i in 1:100) {
+  initialBe_2 = HMC(TrainingX_2, TrainingY_2, sigma, epsilon, L, initialBe_2)
+}
+
+FinalBe_2 = initialBe_2
+
+BetaSamples_2 = matrix(0,NumCol_2,1000)
+BetaSamples_2[,1] = FinalBe_2
+
+#Generating 1000 samples of beta after burn in
+for (i in 2:1000) {
+  B = BetaSamples_2[,i-1]
+  BetaSamples_2[,i] = HMC(TrainingX_2, TrainingY_2, sigma, epsilon, L, B)
+}
+
+#Prediction
+YPred = matrix(0, TestRow, 1000)
+MainYPred = matrix(0, TestRow, 1000)
+
+for (i in 1:1000) {
+  B_1 = BetaSamples_1[,i]
+  pred_1 = 1/(1 + exp(-TestingX_1 %*% B_1))
+  Y = matrix(0,TestRow,1)
+  Y[pred_1 >= 0.5] = 1
+  YPred[,i] = Y
+  for (j in 1:TestRow) {
+    if (YPred[j,i] == 0)
+    {
+      MainYPred[j,i] = 1
+    }
+  }
+  NewTestData = TestingX_1[which(Y==1),]
+  B_2 = BetaSamples_2[,i]
+  pred_2 = 1/(1 + exp(-NewTestData %*% B_2))
+  Y = matrix(0,TestRow,1)
+  Y[pred_2 >= 0.5] = 1
+  YPred[,i] = Y
+  for (j in 1:TestRow) {
+    if (YPred[j,i] == 0)
+    {
+      MainYPred[j,i] = 2
+    }
+    else
+    {
+      MainYPred[j,i] = 3
+    }
+  }
+}
+
+#Calculating error rate
+Loss = matrix(0, 1000, 1)
+for (i in 1:1000) {
+  Error = 0
+  for (j in 1:TestRow) {
+    if (MainYPred[j,i] != MainTestingY[j])
+    {
+      Error = Error + 1
+    }
+  }
+  Loss[i,1] = Error
+}
+
+ErrorRate = sum(Loss)/1000
+cat("Error rate with 10000 beta values is ", ErrorRate)
+
+AverageB_1 = matrix(0,NumCol,1)
+AverageB_2 = matrix(0,NumCol,1)
+MainYPred = matrix(0, 60, 1)
+
+#Finding Average Beta values to predict
+for (i in 1:NumCol) {
+  AverageB_1[i,1] = sum(BetaSamples_1[i,1:1000])/1000
+}
+for (i in 1:NumCol) {
+  AverageB_2[i,1] = sum(BetaSamples_2[i,1:1000])/1000
+}
+#Estimating prediction
+for (i in 1:TestRow)
+{
+  pred_1 = 1/(1 + exp(-MainTestingX[i,] %*% AverageB_1))
+  if (pred_1 > 0.5)
+  {
+    MainYPred[i,1] = 1
+  }
+}
+for (i in 1:TestRow)
+{
+  if (MainYPred[i,1] == 1)
+  {
+    pred_2 = 1/(1 + exp(-MainTestingX[i,] %*% AverageB_2))
+    if (pred_2 >= 0.5)
+    {
+      MainYPred[i,1] = 3
+    }
+    else
+    {
+      MainYPred[i,1] = 2
+    }
+  }
+}
+
+#Calculating error rate
+Error = 0
+for (i in 1:TestRow) {
+  if (MainYPred[i,1] != MainTestingY[i])
+  {
+    Error = Error + 1
+  }
+}
+
+ErrorRate = Error/TestRow
+cat("Error rate with average beta value is ", ErrorRate)
+cat("The values of sigma, epsilon and L are ", sigma, epsilon, L)
+```
+
+The obtained error rates are after different parameter tuning.
+
+**(2) Multinomial One vs All Logistic Regression (Non - Bayesian)**
+
+In this method, a machine learning approach is used.
+
+Let's perform Multinomial One vs All Logistic Regression (Non - Bayesian) on the Iris Dataset,
+
+```{r}
+#Extracting training data and testing data of iris dataset
+library(datasets)
+data("iris")
+
+SetosaData = as.data.frame.matrix(subset(iris, iris$Species == c("setosa")))
+VersicolorData = as.data.frame.matrix(subset(iris, iris$Species == c("versicolor")))
+VirginicaData =  as.data.frame.matrix(subset(iris, iris$Species == c("virginica")))
+
+TrainX = rbind(SetosaData[1:30,],VersicolorData[1:30,], VirginicaData[1:30,])
+TestX = rbind(SetosaData[31:50,],VersicolorData[31:50,], VirginicaData[31:50,])
+
+TrainY = rep(0,90)
+TrainY[which(TrainX$Species == "setosa")] = 1
+TrainY[which(TrainX$Species == "versicolor")] = 2
+TrainY[which(TrainX$Species == "virginica")] = 3
+TrainY = as.matrix(TrainY)
+
+TestY = rep(0,60)
+TestY[which(TestX$Species == "setosa")] = 1
+TestY[which(TestX$Species == "versicolor")] = 2
+TestY[which(TestX$Species == "virginica")] = 3
+TestY = as.matrix(TestY)
+
+TrainX = TrainX[-5]
+TrainX = cbind(TrainX, matrix(1,90,1))
+TrainX = as.matrix(TrainX)
+
+TestX = TestX[-5]
+TestX = cbind(TestX,matrix(1,60,1))
+TestX = as.matrix(TestX)
+
+Model = matrix(0,90,3)
+Model = as.matrix(Model)
+
+#Inserting 1 for each class columns where the rows belong to that class
+for (i in 1:90)
+{
+  val = TrainY[i,1]
+  Model[i,val] = 1
+}
+
+Theta = matrix(0,3,5)
+Theta = as.matrix(Theta)
+LearningRate = 0.001
+Iterations = 1000
+
+sigmoid = function(z)
+{
+  return(1/(1+ exp(-z)))
+}
+
+for (i in 1:Iterations) 
+{
+  #Hypothesis function
+  MulVal = TrainX %*% t(Theta)
+  SigVal = sigmoid(MulVal)
+  #Cost function
+  Cost = -1/150 * ((Model * log(SigVal)) + ((1-Model) * log(1-SigVal)))
+  Cost = colSums(Cost)
+  #Calculating gradient descent
+  Delta = (LearningRate/150) * (t(SigVal - Model) %*% TrainX) 
+  Theta = Theta - Delta 
+}
+
+#Prediction
+PredMatrix = matrix(0, 60, 3)
+Prediction = sigmoid(TestX %*% t(Theta))
+PredMatrix[Prediction > 0.5] = 1
+
+Predict = matrix(1, 60, 1)
+Predict[PredMatrix[,1] == 1] = 2
+Predict[PredMatrix[,2] == 1] = 3
+
+#Mean Square Error
+Error = 0
+for (i in 1:60) {
+  if (Predict[i,] != TestY[i,])
+  {
+    Error = Error + 1
+  }
+}
+
+cat("Error rate is ", Error/60)
+mse = mean((Predict - TestY)^2)
+cat("The Mean Square Error", mse)
+```
+
+Let's perform Multinomial One vs All Logistic Regression (Non - Bayesian) on the Glass Dataset,
+
+```{r}
+#Data Extraction
+setwd("/Users/archanasrisubramanian/Desktop/Probabilistic Modeling/Project")
+Data = read.csv(file = "glass.data.txt", header = TRUE, sep = ',')
+Data = as.data.frame.matrix(Data)
+
+Data$X1.1[which(Data$X1.1 == 3)] = 1
+Data$X1.1[which(Data$X1.1 == 5)] = 3
+Data$X1.1[which(Data$X1.1 == 6)] = 3
+Data$X1.1[which(Data$X1.1 == 7)] = 3
+
+NumSamples = nrow(Data)
+NumAtt = ncol(Data)
+NumRow = nrow(Data)
+NumCol = ncol(Data)
+
+TrainRow = round(0.75 * NumRow)
+TestRow = round(0.25 * NumRow)
+TestRowStart = TrainRow + 1
+
+TrainX = Data[1:TrainRow,]
+TrainX = TrainX[-NumAtt]
+TrainX = cbind(TrainX, matrix(1,TrainRow,1))
+TrainX = as.matrix(TrainX)
+
+TestX = Data[TestRowStart:NumRow,]
+TestX = TestX[-NumAtt]
+TestX = cbind(TestX, matrix(1,TestRow,1))
+TestX = as.matrix(TestX)
+
+TrainY = Data[NumAtt]
+TrainY = TrainY[1:TrainRow,]
+TrainY = as.matrix(TrainY)
+
+TestY = Data[NumAtt]
+TestY = TestY[TestRowStart:NumRow,]
+TestY = as.matrix(TestY)
+
+Model = matrix(0,TrainRow,3)
+Model = as.matrix(Model)
+
+#Inserting 1 for each class columns where the rows belong to that class
+for (i in 1:TrainRow)
+{
+  val = TrainY[i,1]
+  Model[i,val] = 1
+}
+
+Theta = matrix(0,3,NumAtt)
+Theta = as.matrix(Theta)
+LearningRate = 0.001
+Iterations = 1000
+
+sigmoid = function(z)
+{
+  return(1/(1+ exp(-z)))
+}
+
+for (i in 1:Iterations) 
+{
+  #Hypothesis function
+  MulVal = TrainX %*% t(Theta)
+  SigVal = sigmoid(MulVal)
+  #Cost function
+  Cost = -1/NumSamples * ((Model * log(SigVal)) + ((1-Model) * log(1-SigVal)))
+  Cost = colSums(Cost)
+  #Calculating gradient descent
+  Delta = (LearningRate/NumSamples) * (t(SigVal - Model) %*% TrainX) 
+  Theta = Theta - Delta 
+}
+
+#Prediction
+PredMatrix = matrix(0, TestRow, 3)
+Prediction = sigmoid(TestX %*% t(Theta))
+PredMatrix[Prediction > 0.5] = 1
+
+Predict = matrix(1, TestRow, 1)
+Predict[PredMatrix[,1] == 1] = 2
+Predict[PredMatrix[,2] == 1] = 3
+
+#Mean Square Error
+Error = 0
+for (i in 1:TestRow) {
+  if (Predict[i,] != TestY[i,])
+  {
+    Error = Error + 1
+  }
+}
+
+cat("Error rate is ", Error/TestRow)
+mse = mean((Predict - TestY)^2)
+cat("The Mean Square Error is", mse)
+```
+
+**Conclusion**
+
+![Table](/Users/archanasrisubramanian/Desktop/Probabilistic Modeling/Project/Table.png)
+
+From the above table, we can see that same error rate is acheived through both the methods. Further parameter tuning can possibly reduce the error rate further.
